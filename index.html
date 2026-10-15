@@ -598,554 +598,560 @@ const state = {
 };
 
 const API_URL = "https://mashyekh-tech.ir/caspicarpet-api/api.php";
+const API_ROOT = "https://mashyekh-tech.ir/caspicarpet-api/";
+
+const state = {
+  lang: "fa",
+  filter: "all",
+  search: "",
+  products: [],
+  usingAPI: false
+};
 
 const $ = id => document.getElementById(id);
 
-let apiProducts = null;
-let loadingProducts = true;
-let apiError = false;
-
-
-/* تشخیص زبان مرورگر و حفظ انتخاب کاربر */
 function detectLanguage() {
-    try {
-        const saved = localStorage.getItem("caspicarpet_language");
+  try {
+    const saved = localStorage.getItem("caspicarpet_language");
+    if (saved && translations[saved]) return saved;
+  } catch (e) {}
 
-        if (saved && translations[saved]) {
-            return saved;
-        }
-    } catch (e) {}
+  const browser = (navigator.language || "fa").toLowerCase();
 
-    const browser = (navigator.language || "fa").toLowerCase();
+  if (browser.startsWith("ru")) return "ru";
+  if (browser.startsWith("en")) return "en";
 
-    if (browser.startsWith("ru")) return "ru";
-    if (browser.startsWith("en")) return "en";
-
-    return "fa";
+  return "fa";
 }
 
-
-/* انتخاب نام و توضیحات متناسب با زبان */
-function getLocalizedProduct(product) {
-    const lang = state.lang;
-
-    let name = product.name_fa || "";
-    let description = product.description_fa || "";
-
-    if (lang === "en") {
-        name = product.name_en || name;
-        description = product.description_en || description;
-    }
-
-    if (lang === "ru") {
-        name = product.name_ru || name;
-        description = product.description_ru || description;
-    }
-
-    return {
-        ...product,
-        name,
-        description
-    };
+function textValue(value, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  return String(value);
 }
 
+function productCategory(category) {
+  const value = String(category || "").toLowerCase();
 
-/* تبدیل اطلاعات API به ساختار مورد استفاده فروشگاه */
-function normalizeProduct(product, index) {
-    const localized = getLocalizedProduct(product);
+  if (value === "rug" || value.includes("rug")) {
+    return "rug";
+  }
 
-    const category =
-        product.category === "rug" ? "rug" : "tapestry";
-
-    let imageUrl = "";
-
-    if (product.image) {
-        try {
-            imageUrl = new URL(product.image, API_URL).href;
-        } catch (e) {
-            imageUrl = "";
-        }
-    }
-
-    return {
-        id: product.id,
-        name: localized.name,
-        description: localized.description,
-        category,
-        size: translations[state.lang].sizeUnknown,
-        pattern: category === "rug"
-            ? "pattern-rug"
-            : "pattern-" + ((index % 10) + 1),
-
-        priceMode: product.price_mode || "inquiry",
-        price: product.price === null || product.price === ""
-            ? null
-            : Number(product.price),
-
-        availability: product.availability || "available",
-        imageUrl,
-        isApiProduct: true,
-        sortOrder: Number(product.sort_order || 0)
-    };
+  return "tapestry";
 }
 
+function getLocalizedProduct(product, lang) {
+  const suffix = lang === "en" ? "en" : lang === "ru" ? "ru" : "fa";
+  const t = translations[lang];
 
-/* محصولات نمایشی قبلی؛ فقط در صورت قطع بودن API */
+  const name =
+    product["name_" + suffix] ||
+    product.name_fa ||
+    product.name_en ||
+    product.name_ru ||
+    "";
+
+  const description =
+    product["description_" + suffix] ||
+    product.description_fa ||
+    product.description_en ||
+    product.description_ru ||
+    "";
+
+  const priceMode = String(product.price_mode || "inquiry").toLowerCase();
+
+  const numericPrice =
+    product.price !== null &&
+    product.price !== undefined &&
+    product.price !== "" &&
+    Number.isFinite(Number(product.price))
+      ? Number(product.price)
+      : null;
+
+  const hasPrice =
+    numericPrice !== null &&
+    numericPrice > 0 &&
+    priceMode !== "inquiry";
+
+  const availability =
+    String(product.availability || "available").toLowerCase();
+
+  return {
+    id: product.id,
+    name: textValue(name),
+    description: textValue(description),
+    category: productCategory(product.category),
+    image: product.image
+      ? new URL(product.image, API_ROOT).href
+      : "",
+    price: hasPrice ? numericPrice : null,
+    priceMode: priceMode,
+    available: availability === "available",
+    size: product.size || t.sizeUnknown,
+    pattern: "pattern-" + (product.id || "1")
+  };
+}
+
 function getDemoProducts() {
-    const t = translations[state.lang];
+  const t = translations[state.lang];
 
-    return t.products.map((p, i) => ({
-        id: "demo-" + i,
-        name: p[0],
-        description: p[1],
-        category: p[2] === "rug" ? "rug" : "tapestry",
-        size: p[3],
-        pattern: i === 10 ? "pattern-rug" : "pattern-" + (i + 1),
-        priceMode: "inquiry",
-        price: null,
-        availability: "available",
-        imageUrl: "",
-        isApiProduct: false,
-        sortOrder: i
-    }));
+  return t.products.map((p, i) => ({
+    id: "demo-" + (i + 1),
+    name: p[0],
+    description: p[1],
+    category: productCategory(p[2]),
+    size: p[3] || t.sizeUnknown,
+    image: "",
+    price: null,
+    priceMode: "inquiry",
+    available: true,
+    pattern: i === 10 ? "pattern-rug" : "pattern-" + (i + 1),
+    demo: true
+  }));
 }
 
-
-/* دریافت محصولات واقعی از هاست */
 async function loadProducts() {
-    loadingProducts = true;
-    apiError = false;
-    renderProducts();
+  const grid = $("productGrid");
 
-    try {
-        const response = await fetch(API_URL, {
-            method: "GET",
-            cache: "no-store",
-            headers: {
-                "Accept": "application/json"
-            }
-        });
+  if (grid) {
+    grid.innerHTML =
+      '<div class="empty">در حال دریافت محصولات...</div>';
+  }
 
-        if (!response.ok) {
-            throw new Error("API HTTP " + response.status);
-        }
-
-        const data = await response.json();
-
-        if (!data.success || !Array.isArray(data.products)) {
-            throw new Error("Invalid API response");
-        }
-
-        apiProducts = data.products
-            .map((p, i) => normalizeProduct(p, i))
-            .filter(p => p.name.trim() !== "")
-            .sort((a, b) => a.sortOrder - b.sortOrder);
-
-    } catch (error) {
-        console.error("CaspiCarpet API error:", error);
-
-        apiProducts = null;
-        apiError = true;
-
-    } finally {
-        loadingProducts = false;
-        renderProducts();
-    }
-}
-
-
-/* ترجمه اجزای ثابت سایت */
-function applyTranslations(lang) {
-    state.lang = translations[lang] ? lang : "fa";
-
-    const t = translations[state.lang];
-
-    document.documentElement.lang = state.lang;
-    document.documentElement.dir = t.dir;
-
-    $("language").value = state.lang;
-
-    document.title =
-        state.lang === "fa"
-            ? "CaspiCarpet | کاسپی کارپت"
-            : state.lang === "ru"
-                ? "CaspiCarpet | Персидское искусство"
-                : "CaspiCarpet | Persian Handcraft";
-
-    document.querySelectorAll("[data-i18n]").forEach(el => {
-        const key = el.dataset.i18n;
-
-        if (t[key] !== undefined) {
-            el.innerHTML = t[key];
-        }
+  try {
+    const response = await fetch(API_URL, {
+      method: "GET",
+      cache: "no-store"
     });
 
-    document.querySelectorAll("[data-i18n-placeholder]").forEach(el => {
-        const key = el.dataset.i18nPlaceholder;
-
-        if (t[key] !== undefined) {
-            el.placeholder = t[key];
-        }
-    });
-
-    renderProducts();
-}
-
-
-/* فهرست محصولات فعال */
-function getProducts() {
-    if (apiProducts !== null) {
-        return apiProducts;
+    if (!response.ok) {
+      throw new Error("خطای دریافت محصولات: " + response.status);
     }
 
-    return getDemoProducts();
-}
-
-
-/* متن قیمت */
-function formatPrice(product) {
-    const t = translations[state.lang];
-
-    if (product.availability === "unavailable") {
-        return t.unavailable;
-    }
+    const data = await response.json();
 
     if (
-        product.priceMode !== "display" ||
-        product.price === null ||
-        !Number.isFinite(product.price) ||
-        product.price < 0
+      data &&
+      data.success === true &&
+      Array.isArray(data.products)
     ) {
-        return t.askPrice;
-    }
+      state.products = data.products.map(product =>
+        getLocalizedProduct(product, state.lang)
+      );
 
-    const amount = new Intl.NumberFormat(
-        state.lang === "fa" ? "fa-IR" : state.lang,
-        { maximumFractionDigits: 0 }
-    ).format(product.price);
-
-    if (state.lang === "fa") {
-        return amount + " تومان";
-    }
-
-    if (state.lang === "ru") {
-        return amount + " تومان";
-    }
-
-    return amount + " Toman";
-}
-
-
-/* ساخت تصویر یا طرح جایگزین */
-function createProductVisual(product, isModal = false) {
-    const visual = document.createElement("div");
-
-    visual.className = isModal
-        ? "modal-picture"
-        : "product-visual";
-
-    if (product.imageUrl) {
-        const img = document.createElement("img");
-
-        img.src = product.imageUrl;
-        img.alt = product.name;
-        img.loading = "lazy";
-        img.style.width = "100%";
-        img.style.height = "100%";
-        img.style.objectFit = "contain";
-        img.style.position = "relative";
-        img.style.zIndex = "1";
-
-        img.onerror = function () {
-            visual.replaceChildren(createPattern(product));
-        };
-
-        visual.appendChild(img);
-
+      state.usingAPI = true;
     } else {
-        visual.appendChild(createPattern(product));
+      throw new Error("ساختار پاسخ API معتبر نیست.");
     }
+  } catch (error) {
+    console.error("CaspiCarpet API:", error);
 
-    if (!isModal && !product.isApiProduct) {
-        const badge = document.createElement("span");
+    state.products = getDemoProducts();
+    state.usingAPI = false;
+  }
 
-        badge.className = "badge";
-        badge.textContent = translations[state.lang].sample;
-
-        visual.appendChild(badge);
-    }
-
-    if (
-        !isModal &&
-        product.availability === "unavailable"
-    ) {
-        const badge = document.createElement("span");
-
-        badge.className = "badge";
-        badge.textContent = translations[state.lang].unavailable;
-
-        visual.appendChild(badge);
-    }
-
-    return visual;
+  renderProducts();
 }
 
+function applyTranslations(lang) {
+  state.lang = translations[lang] ? lang : "fa";
 
-/* طرح تزئینی در نبود عکس */
-function createPattern(product) {
-    const art = document.createElement("div");
+  const t = translations[state.lang];
 
-    art.className = "product-art " + product.pattern;
+  document.documentElement.lang = state.lang;
+  document.documentElement.dir = t.dir;
 
-    const mark = document.createElement("div");
-    mark.className = "pattern-mark";
+  $("language").value = state.lang;
 
-    const symbol = document.createElement("span");
-    symbol.textContent = "✦";
+  document.title =
+    state.lang === "fa"
+      ? "CaspiCarpet | کاسپی کارپت"
+      : state.lang === "ru"
+      ? "CaspiCarpet | Персидское искусство"
+      : "CaspiCarpet | Persian Handcraft";
 
-    mark.appendChild(symbol);
-    art.appendChild(mark);
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    const key = el.dataset.i18n;
 
-    return art;
+    if (t[key] !== undefined) {
+      el.innerHTML = t[key];
+    }
+  });
+
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(el => {
+    const key = el.dataset.i18nPlaceholder;
+
+    if (t[key] !== undefined) {
+      el.placeholder = t[key];
+    }
+  });
+
+  if (state.usingAPI) {
+    state.products = state.products.map(product => {
+      const original = {
+        id: product.id,
+        name_fa: product.name_fa,
+        name_en: product.name_en,
+        name_ru: product.name_ru,
+        description_fa: product.description_fa,
+        description_en: product.description_en,
+        description_ru: product.description_ru,
+        category: product.category,
+        image: product.image,
+        price: product.price,
+        price_mode: product.priceMode,
+        availability: product.available ? "available" : "unavailable",
+        size: product.size
+      };
+
+      return product;
+    });
+
+    loadProducts();
+  } else {
+    state.products = getDemoProducts();
+    renderProducts();
+  }
 }
 
+function formatPrice(price) {
+  const lang = state.lang;
 
-/* نمایش محصولات */
+  const formatted = new Intl.NumberFormat(
+    lang === "fa" ? "fa-IR" : lang === "ru" ? "ru-RU" : "en-US"
+  ).format(price);
+
+  return lang === "fa"
+    ? formatted + " تومان"
+    : lang === "ru"
+    ? formatted + " تومان"
+    : formatted + " Toman";
+}
+
+function productPrice(product) {
+  const t = translations[state.lang];
+
+  if (!product.available) {
+    return t.unavailable;
+  }
+
+  if (product.price !== null && product.price > 0) {
+    return formatPrice(product.price);
+  }
+
+  return t.askPrice;
+}
+
+function createProductVisual(product, t) {
+  const visual = document.createElement("div");
+  visual.className = "product-visual";
+
+  if (product.image) {
+    const image = document.createElement("img");
+
+    image.src = product.image;
+    image.alt = product.name;
+    image.loading = "lazy";
+    image.style.width = "100%";
+    image.style.height = "100%";
+    image.style.objectFit = "contain";
+    image.style.position = "absolute";
+    image.style.inset = "0";
+    image.style.padding = "12px";
+    image.style.background = "#e9ddc9";
+
+    image.onerror = () => {
+      image.remove();
+      visual.appendChild(createPatternArtwork(product));
+    };
+
+    visual.appendChild(image);
+  } else {
+    visual.appendChild(createPatternArtwork(product));
+  }
+
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = product.demo ? t.sample : t.details;
+
+  visual.appendChild(badge);
+
+  return visual;
+}
+
+function createPatternArtwork(product) {
+  const artwork = document.createElement("div");
+
+  artwork.className = "product-art " +
+    (product.pattern || "pattern-1");
+
+  const mark = document.createElement("div");
+  mark.className = "pattern-mark";
+
+  const span = document.createElement("span");
+  span.textContent = "✦";
+
+  mark.appendChild(span);
+  artwork.appendChild(mark);
+
+  return artwork;
+}
+
 function renderProducts() {
-    const t = translations[state.lang];
-    const grid = $("productGrid");
+  const t = translations[state.lang];
+  const grid = $("productGrid");
 
-    if (!grid) return;
+  if (!grid) return;
 
-    grid.innerHTML = "";
+  const products = state.products.filter(product => {
+    const categoryOK =
+      state.filter === "all" ||
+      product.category === state.filter;
 
-    if (loadingProducts && apiProducts === null) {
-        const loading = document.createElement("div");
+    const searchText =
+      (product.name + " " + product.description).toLowerCase();
 
-        loading.className = "empty";
-        loading.textContent =
-            state.lang === "fa"
-                ? "در حال دریافت محصولات..."
-                : state.lang === "ru"
-                    ? "Загрузка товаров..."
-                    : "Loading products...";
+    const searchOK = searchText.includes(state.search.toLowerCase());
 
-        grid.appendChild(loading);
-        return;
-    }
+    return categoryOK && searchOK;
+  });
 
-    const products = getProducts().filter(product => {
-        const categoryOk =
-            state.filter === "all" ||
-            product.category === state.filter;
+  grid.innerHTML = "";
 
-        const searchableText =
-            (product.name + " " + product.description).toLowerCase();
+  if (!products.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = t.noResults;
+    grid.appendChild(empty);
+    return;
+  }
 
-        const searchOk = searchableText.includes(
-            state.search.toLowerCase()
-        );
+  products.forEach(product => {
+    const card = document.createElement("article");
+    card.className = "product";
 
-        return categoryOk && searchOk;
-    });
-
-    if (!products.length) {
-        const empty = document.createElement("div");
-
-        empty.className = "empty";
-        empty.textContent = t.noResults;
-
-        grid.appendChild(empty);
-        return;
-    }
-
-    products.forEach(product => {
-        const card = document.createElement("article");
-        card.className = "product";
-
-        card.appendChild(createProductVisual(product));
-
-        const info = document.createElement("div");
-        info.className = "product-info";
-
-        const type = document.createElement("div");
-        type.className = "product-type";
-        type.textContent =
-            product.category === "rug" ? t.rug : t.tapestry;
-
-        const title = document.createElement("h3");
-        title.className = "product-title";
-        title.textContent = product.name;
-
-        const description = document.createElement("div");
-        description.className = "product-desc";
-        description.textContent = product.description;
-
-        const bottom = document.createElement("div");
-        bottom.className = "product-bottom";
-
-        const price = document.createElement("span");
-        price.className = "price";
-        price.textContent = formatPrice(product);
-
-        const button = document.createElement("button");
-        button.className = "details-btn";
-        button.textContent = t.details;
-        button.type = "button";
-
-        button.addEventListener("click", () => {
-            openProduct(product);
-        });
-
-        bottom.append(price, button);
-
-        info.append(type, title, description, bottom);
-        card.appendChild(info);
-
-        grid.appendChild(card);
-    });
-}
-
-
-/* نمایش جزئیات محصول */
-function openProduct(product) {
-    const t = translations[state.lang];
-    const content = $("modalContent");
-
-    content.innerHTML = "";
-
-    content.appendChild(createProductVisual(product, true));
-
-    const text = document.createElement("div");
-    text.className = "modal-text";
+    const info = document.createElement("div");
+    info.className = "product-info";
 
     const type = document.createElement("div");
     type.className = "product-type";
     type.textContent =
-        product.category === "rug" ? t.rug : t.tapestry;
+      product.category === "rug" ? t.rug : t.tapestry;
 
-    const title = document.createElement("h2");
-    title.id = "modalTitle";
+    const title = document.createElement("h3");
+    title.className = "product-title";
     title.textContent = product.name;
 
-    const description = document.createElement("p");
-    description.id = "modalDescription";
+    const description = document.createElement("div");
+    description.className = "product-desc";
     description.textContent = product.description;
 
-    const price = document.createElement("div");
-    price.className = "modal-price";
-    price.textContent = formatPrice(product);
+    const bottom = document.createElement("div");
+    bottom.className = "product-bottom";
 
-    const sizeLine = document.createElement("p");
-    const sizeLabel = document.createElement("strong");
-    sizeLabel.textContent = t.sizeLabel + ": ";
+    const price = document.createElement("span");
+    price.className = "price";
+    price.textContent = productPrice(product);
 
-    const sizeValue = document.createElement("span");
-    sizeValue.textContent = product.size || t.sizeUnknown;
+    const button = document.createElement("button");
+    button.className = "details-btn";
+    button.textContent = t.details;
+    button.type = "button";
+    button.addEventListener("click", () => openProduct(product));
 
-    sizeLine.append(sizeLabel, sizeValue);
+    bottom.appendChild(price);
+    bottom.appendChild(button);
 
-    const statusLine = document.createElement("p");
-    const statusLabel = document.createElement("strong");
-    statusLabel.textContent = t.statusLabel + ": ";
+    info.appendChild(type);
+    info.appendChild(title);
+    info.appendChild(description);
+    info.appendChild(bottom);
 
-    const statusValue = document.createElement("span");
+    card.appendChild(createProductVisual(product, t));
+    card.appendChild(info);
 
-    statusValue.textContent =
-        product.availability === "unavailable"
-            ? t.unavailable
-            : t.available;
-
-    statusLine.append(statusLabel, statusValue);
-
-    text.append(
-        type,
-        title,
-        description,
-        price,
-        sizeLine,
-        statusLine
-    );
-
-    if (!product.isApiProduct) {
-        const note = document.createElement("div");
-        note.className = "modal-note";
-        note.textContent = t.modalNote;
-
-        text.appendChild(note);
-    }
-
-    content.appendChild(text);
-
-    $("productModal").classList.add("show");
-    document.body.style.overflow = "hidden";
+    grid.appendChild(card);
+  });
 }
 
+function openProduct(product) {
+  const t = translations[state.lang];
+  const modalContent = $("modalContent");
 
-/* بستن پنجره جزئیات */
+  modalContent.innerHTML = "";
+
+  const picture = document.createElement("div");
+  picture.className = "modal-picture";
+
+  if (product.image) {
+    const image = document.createElement("img");
+
+    image.src = product.image;
+    image.alt = product.name;
+    image.style.maxWidth = "100%";
+    image.style.maxHeight = "350px";
+    image.style.objectFit = "contain";
+
+    image.onerror = () => {
+      image.remove();
+      picture.appendChild(createPatternArtwork(product));
+    };
+
+    picture.appendChild(image);
+  } else {
+    picture.appendChild(createPatternArtwork(product));
+  }
+
+  const text = document.createElement("div");
+  text.className = "modal-text";
+
+  const type = document.createElement("div");
+  type.className = "product-type";
+  type.textContent =
+    product.category === "rug" ? t.rug : t.tapestry;
+
+  const title = document.createElement("h2");
+  title.id = "modalTitle";
+  title.textContent = product.name;
+
+  const description = document.createElement("p");
+  description.textContent = product.description;
+
+  const price = document.createElement("div");
+  price.className = "modal-price";
+  price.textContent = productPrice(product);
+
+  const size = document.createElement("p");
+  const sizeLabel = document.createElement("strong");
+  sizeLabel.textContent = t.sizeLabel + ": ";
+
+  const sizeValue = document.createElement("span");
+  sizeValue.textContent = product.size || t.sizeUnknown;
+
+  size.appendChild(sizeLabel);
+  size.appendChild(sizeValue);
+
+  const status = document.createElement("p");
+  const statusLabel = document.createElement("strong");
+  statusLabel.textContent = t.statusLabel + ": ";
+
+  const statusValue = document.createElement("span");
+  statusValue.textContent =
+    product.available ? t.available : t.unavailable;
+
+  status.appendChild(statusLabel);
+  status.appendChild(statusValue);
+
+  const note = document.createElement("div");
+  note.className = "modal-note";
+  note.textContent = product.demo ? t.modalNote : "";
+
+  text.appendChild(type);
+  text.appendChild(title);
+  text.appendChild(description);
+  text.appendChild(price);
+  text.appendChild(size);
+  text.appendChild(status);
+
+  if (product.demo) {
+    text.appendChild(note);
+  }
+
+  modalContent.appendChild(picture);
+  modalContent.appendChild(text);
+
+  $("productModal").classList.add("show");
+  document.body.style.overflow = "hidden";
+}
+
 function closeModal() {
-    $("productModal").classList.remove("show");
-    document.body.style.overflow = "";
+  $("productModal").classList.remove("show");
+  document.body.style.overflow = "";
 }
 
-
-/* تغییر زبان */
 $("language").addEventListener("change", event => {
-    const lang = event.target.value;
+  const lang = event.target.value;
 
-    try {
-        localStorage.setItem("caspicarpet_language", lang);
-    } catch (e) {}
+  try {
+    localStorage.setItem("caspicarpet_language", lang);
+  } catch (e) {}
 
-    applyTranslations(lang);
+  state.lang = translations[lang] ? lang : "fa";
+
+  applyTranslationsOnly(state.lang);
+
+  loadProducts();
 });
 
+function applyTranslationsOnly(lang) {
+  const t = translations[lang];
 
-/* جست‌وجو */
+  document.documentElement.lang = lang;
+  document.documentElement.dir = t.dir;
+
+  document.title =
+    lang === "fa"
+      ? "CaspiCarpet | کاسپی کارپت"
+      : lang === "ru"
+      ? "CaspiCarpet | Персидское искусство"
+      : "CaspiCarpet | Persian Handcraft";
+
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    const key = el.dataset.i18n;
+
+    if (t[key] !== undefined) {
+      el.innerHTML = t[key];
+    }
+  });
+
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(el => {
+    const key = el.dataset.i18nPlaceholder;
+
+    if (t[key] !== undefined) {
+      el.placeholder = t[key];
+    }
+  });
+}
+
 $("search").addEventListener("input", event => {
-    state.search = event.target.value.trim();
-    renderProducts();
+  state.search = event.target.value.trim();
+  renderProducts();
 });
 
-
-/* فیلتر دسته‌ها */
 document.querySelectorAll(".tab").forEach(button => {
-    button.addEventListener("click", () => {
-        document.querySelectorAll(".tab").forEach(tab => {
-            tab.classList.remove("active");
-        });
-
-        button.classList.add("active");
-        state.filter = button.dataset.filter;
-
-        renderProducts();
+  button.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(tab => {
+      tab.classList.remove("active");
     });
+
+    button.classList.add("active");
+    state.filter = button.dataset.filter;
+
+    renderProducts();
+  });
 });
 
-
-/* بستن جزئیات */
 $("modalClose").addEventListener("click", closeModal);
 
 $("productModal").addEventListener("click", event => {
-    if (event.target === $("productModal")) {
-        closeModal();
-    }
+  if (event.target === $("productModal")) {
+    closeModal();
+  }
 });
 
 document.addEventListener("keydown", event => {
-    if (event.key === "Escape") {
-        closeModal();
-    }
-});
+  if (event.key === "Escape") {
+    closeModal();
 
+  
 
-/* سال جاری */
 $("year").textContent = new Date().getFullYear();
 
+state.lang = detectLanguage();
+$("language").value = state.lang;
 
-/* اجرای اولیه */
-applyTranslations(detectLanguage());
+applyTranslationsOnly(state.lang);
 loadProducts();
+</script>
 
 </body>
 </html>

@@ -970,5 +970,37 @@ applyTranslations(detectLanguage());
 loadProducts();
 </script>
 
+
+
+
+<script>
+(function () {
+  const ADMIN_URL = "https://mashyekh-tech.ir/caspicarpet-api/admin.php";
+  const logo = document.querySelector(".brand");
+
+  if (!logo) return;
+
+  let taps = 0;
+  let resetTimer;
+
+  logo.addEventListener("click", function (event) {
+    event.preventDefault();
+    taps++;
+
+    clearTimeout(resetTimer);
+
+    if (taps >= 7) {
+      taps = 0;
+      window.location.href = ADMIN_URL;
+      return;
+    }
+
+    resetTimer = setTimeout(function () {
+      taps = 0;
+    }, 3000);
+  });
+})();
+</script>
+
 </body>
 </html>
